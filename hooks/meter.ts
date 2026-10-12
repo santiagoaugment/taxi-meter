@@ -155,3 +155,14 @@ export function shortModel(model: string): string {
     .replace(/-(\d+)-(\d+)$/, ' $1.$2')
     .replace(/-(\d+)$/, ' $1')
 }
+
+/** Time until a reset, to its two largest units: 3d 4h, 2h 14m, 45m. */
+export function fmtLeft(ms: number): string {
+  const m = Math.floor(ms / 60000)
+  if (m < 1) return '<1m'
+  const d = Math.floor(m / 1440)
+  const h = Math.floor(m % 1440 / 60)
+  if (d) return `${d}d ${h}h`
+  if (h) return `${h}h ${m % 60}m`
+  return `${m}m`
+}

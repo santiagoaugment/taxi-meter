@@ -1,7 +1,7 @@
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
-import type { AgentSpawnInput, CommandRunInput, On, RenderPropsOf, SessionStartInput, TurnCompleteInput, TurnStepInput, TurnUsage } from 'claude-code'
+import type { AgentSpawnInput, CommandRunInput, On, RenderPropsOf, SessionRateLimit, SessionStartInput, TurnCompleteInput, TurnStepInput, TurnUsage } from 'claude-code'
 
-import { fmtUsd, freshLedger, noteDone, noteSpawn, priceOf, recordStep, shortModel, totals } from '../hooks/meter'
+import { fmtLeft, fmtUsd, freshLedger, noteDone, noteSpawn, priceOf, recordStep, shortModel, totals } from '../hooks/meter'
 
 tier('user')
 
@@ -44,10 +44,11 @@ function world(on: On, opts: { store?: Map<string, unknown> } = {}) {
   on('store.set', ($, e) => { store.set(e.key, e.value); return { value: undefined } })
   on('store.delete', ($, e) => { store.delete(e.key); return { value: undefined } })
   on('store.keys', () => ({ value: [...store.keys()] }))
-  const official = { usd: 0 }
+  const official = { usd: 0, limits: [] as SessionRateLimit[] }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
-  on('session.usage', () => ({ value: { startedAt: START, context: { window: 1000000, tokens: 0 }, rateLimits: [], cost: { usd: official.usd } } }))
+  on('session.usage', () => ({ value: { startedAt: START, context: { window: 1000000, tokens: 0 }, rateLimits: official.limits, cost: { usd: official.usd } } }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('ui.status', () => ({ value: undefined }))
@@ -128,6 +129,10 @@ describe('prices', () => {
     expect(shortModel('claude-haiku-4-5-20251001')).toBe('haiku 4.5')
     expect(shortModel('claude-fable-5')).toBe('fable 5')
     expect(shortModel('us.anthropic.claude-sonnet-5-5[1m]')).toBe('sonnet 5.5')
+    expect(fmtLeft(30 * 1000)).toBe('<1m')
+    expect(fmtLeft(45 * 60000)).toBe('45m')
+    expect(fmtLeft((2 * 60 + 14) * 60000)).toBe('2h 14m')
+    expect(fmtLeft(((3 * 24 + 4) * 60 + 30) * 60000)).toBe('3d 4h')
   })
 })
 
@@ -345,5 +350,75 @@ describe('pane', () => {
     expect(shown).toMatch(/job 10/)
     expect(shown).not.toMatch(/job 1\b/)
     expect(shown).toMatch(/\+\d+ more/)
+  })
+})
+
+// Plan windows as a Team or Max subscription reports them, measured from START.
+const iso = (ms: number) => new Date(START + ms).toISOString()
+const H = 3600000
+const limits = (fiveHour: number, sevenDay: number): SessionRateLimit[] => [
+  { kind: 'five_hour', percentUsed: fiveHour, resetsAt: iso(2 * H + 14 * 60000) },
+  { kind: 'seven_day', percentUsed: sevenDay, resetsAt: iso(76 * H) },
+]
+
+describe('plan usage', () => {
+  test('the pane shows each plan window, how full it is and when it resets, before any request', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    w.official.limits = limits(58, 21)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    const shown = await texts(await mountPane($))
+    expect(shown).toMatch(/PLAN/)
+    expect(shown).toMatch(/5h[\s█░]+58%\s+resets in 2h 14m/)
+    expect(shown).toMatch(/7d[\s█░]+21%\s+resets in 3d 4h/)
+  })
+
+  test('off a subscription there is no plan block', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    await step($, w, usage())
+    expect(await texts(await mountPane($))).not.toMatch(/PLAN/)
+    expect((await $.command.run(run(''))).text).not.toMatch(/plan/)
+  })
+
+  test('a window turns warning past 80% and error past 95%, and at its limit the pane says so', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    w.official.limits = limits(97, 85)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    const ui = await mountPane($)
+    const pcts = await ui.findAll({ type: 'Text', text: /^\s*\d+%$/ })
+    expect(pcts.map(t => t.props.color)).toEqual(['error', 'warning'])
+    expect(await texts(ui)).not.toMatch(/extra usage/)
+    w.official.limits = limits(100, 85)
+    await $.session.measure({ context: { window: 1000000, tokens: 0 }, rateLimits: w.official.limits, changed: ['rateLimits'] })
+    expect(await texts(ui)).toMatch(/extra usage/)
+  })
+
+  test('a window that moves redraws the pane', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    w.official.limits = limits(10, 5)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    const ui = await mountPane($)
+    expect(await texts(ui)).toMatch(/10%/)
+    w.official.limits = limits(11, 5)
+    await $.session.measure({ context: { window: 1000000, tokens: 0 }, rateLimits: w.official.limits, changed: ['rateLimits'] })
+    expect(await texts(ui)).toMatch(/11%/)
+  })
+
+  test('/meter answers with the plan windows too', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    w.official.limits = limits(58, 21)
+    await $.session.start(session)
+    expect((await $.command.run(run(''))).text).toMatch(/plan: 5h 58% \(resets in 2h 14m\) · 7d 21% \(resets in 3d 4h\)/)
+    await step($, w, usage())
+    expect((await $.command.run(run(''))).text).toMatch(/plan: 5h 58%/)
   })
 })

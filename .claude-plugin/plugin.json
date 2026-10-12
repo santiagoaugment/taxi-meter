@@ -1,7 +1,7 @@
 {
   "name": "taxi-meter",
-  "version": "0.4.0",
-  "description": "A live sidebar meter of what this session spends: every model request priced by token type, split between the main conversation and each subagent, next to /cost's total. /meter pane opens it.",
+  "version": "0.4.1",
+  "description": "A live sidebar meter of what this session spends: every model request priced by token type, split between the main conversation and each subagent, next to /cost's total, and the plan's 5-hour and 7-day windows on a subscription. /meter pane opens it.",
   "author": { "name": "Santiago Boxiga" },
   "license": "MIT"
 }

@@ -1,6 +1,6 @@
-import type { Elements, RenderNode } from 'claude-code'
+import type { Elements, RenderNode, SessionRateLimit } from 'claude-code'
 
-import { BUCKETS, fmtTok, fmtUsd, rowUsd, shortModel, totals, type Buckets, type Ledger, type Row } from './meter'
+import { BUCKETS, fmtLeft, fmtTok, fmtUsd, rowUsd, shortModel, totals, type Buckets, type Ledger, type Row } from './meter'
 
 export const PANE = 'taxi-meter'
 
@@ -16,6 +16,28 @@ const CLAWD_MIN_WIDTH = 28
 
 const NAMES: Record<keyof Buckets, string> = { output: 'output', write: 'cache write', read: 'cache read', input: 'input' }
 const COLORS: Record<keyof Buckets, string> = { output: 'claude', write: 'warning', read: 'success', input: 'suggestion' }
+
+/** The account's plan windows (empty off a subscription), and the clock their resets count down from. */
+export type Plan = { limits: SessionRateLimit[]; now: number }
+
+const NO_PLAN: Plan = { limits: [], now: 0 }
+
+const WINDOW_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' }
+const windowName = (r: SessionRateLimit) => WINDOW_NAMES[r.kind] ?? r.kind.replace(/_/g, ' ')
+const windowColor = (r: SessionRateLimit) => (r.percentUsed >= 95 ? 'error' : r.percentUsed >= 80 ? 'warning' : 'success')
+const windowPct = (r: SessionRateLimit) => `${Math.round(r.percentUsed)}%`
+const atLimit = (p: Plan) => p.limits.some(r => r.percentUsed >= 100)
+
+function resetIn(r: SessionRateLimit, now: number, short = false): string {
+  const at = r.resetsAt ? Date.parse(r.resetsAt) : NaN
+  return Number.isNaN(at) ? '' : `${short ? '' : 'resets in '}${fmtLeft(Math.max(0, at - now))}`
+}
+
+/** Cells left for a plan bar beside its name, percentage and reset. */
+const planBar = (width: number, nameWidth: number, resets: string[]) => {
+  const resetWidth = Math.max(0, ...resets.map(x => x.length))
+  return width - nameWidth - 7 - (resetWidth ? resetWidth + 2 : 0)
+}
 
 /** What /cost has added since the meter started, and the part of it no request the meter saw accounts for. */
 export function official(l: Ledger, costUsd: number | null): { since: number; other: number } | null {
@@ -58,13 +80,20 @@ const rowDetail = (r: Row) =>
     .filter(Boolean).join(' · ')
 
 /** The text a bare /meter answers with. */
-export function cardText(l: Ledger, costUsd: number | null): string {
+export function cardText(l: Ledger, costUsd: number | null, plan: Plan = NO_PLAN): string {
   const t = totals(l)
-  if (t.requests === 0) return 'taxi-meter: no requests yet since the meter started.'
+  const planLine = plan.limits.length
+    ? ['plan: ' + plan.limits.map(r => {
+      const reset = resetIn(r, plan.now)
+      return `${windowName(r)} ${windowPct(r)}${reset ? ` (${reset})` : ''}`
+    }).join(' · ') + (atLimit(plan) ? ' · at its limit: extra usage, where the account has it, bills from here' : '')]
+    : []
+  if (t.requests === 0) return ['taxi-meter: no requests yet since the meter started.', ...planLine].join('\n')
   const o = official(l, costUsd)
   const lines = [
     `taxi-meter: ${fmtUsd(t.total)} over ${t.requests} request${t.requests === 1 ? '' : 's'}` +
       (o ? ` · /cost ${fmtUsd(o.since)} since the meter started · other ${fmtUsd(Math.max(0, o.other))}` : ''),
+    ...planLine,
     'where it goes: ' + BUCKETS.map(k => `${NAMES[k]} ${fmtUsd(t.usd[k])} (${pct(t.usd[k], t.total)})`).join(' · '),
   ]
   for (const r of ranked(l)) {
@@ -77,7 +106,7 @@ export function cardText(l: Ledger, costUsd: number | null): string {
 type Els = Pick<Elements['terminal'], 'Box' | 'Text'>
 
 /** `frame` counts the walk's steps: on odd ones a running agent's Clawd has lifted the other pair of legs. */
-export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, costUsd: number | null, frame = 0): RenderNode {
+export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, costUsd: number | null, frame = 0, plan: Plan = NO_PLAN): RenderNode {
   const width = Math.max(16, Math.min(48, bodyColumns - 2))
   const t = totals(l)
   const o = official(l, costUsd)
@@ -105,8 +134,29 @@ export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, cos
     ] })] : []),
   ] })
 
+  // The plan's windows: what a subscription actually runs out of, whatever the dollars above say.
+  // A narrow pane keeps the bar readable by saying only how long until each reset.
+  const nameWidth = Math.max(0, ...plan.limits.map(r => windowName(r).length))
+  let resets = plan.limits.map(r => resetIn(r, plan.now))
+  if (planBar(width, nameWidth, resets) < 8) resets = plan.limits.map(r => resetIn(r, plan.now, true))
+  const planBarWidth = Math.max(4, Math.min(20, planBar(width, nameWidth, resets)))
+  const planned = plan.limits.length ? [Box({ flexDirection: 'column', children: [
+    heading('PLAN'),
+    ...plan.limits.map((r, i) => {
+      const filled = Math.round(Math.min(100, Math.max(0, r.percentUsed)) / 100 * planBarWidth)
+      return Text({ wrap: 'truncate-end', children: [
+        windowName(r).padEnd(nameWidth) + ' ',
+        Text({ color: windowColor(r), children: ['█'.repeat(filled)] }),
+        Text({ dimColor: true, children: ['░'.repeat(planBarWidth - filled)] }),
+        Text({ color: windowColor(r), children: [windowPct(r).padStart(5)] }),
+        Text({ dimColor: true, children: [resets[i] ? '  ' + resets[i] : ''] }),
+      ] })
+    }),
+    ...(atLimit(plan) ? [Text({ color: 'error', wrap: 'wrap', children: ['At its limit: requests wait for the reset, or bill as extra usage where the account has it.'] })] : []),
+  ] })] : []
+
   if (t.requests === 0) {
-    return Box({ flexDirection: 'column', children: [fare, Box({ marginTop: 1, children: [Text({ dimColor: true, wrap: 'wrap', children: ['No requests yet. The meter runs from the next one.'] })] })] })
+    return Box({ flexDirection: 'column', children: [fare, ...planned, Box({ marginTop: 1, children: [Text({ dimColor: true, wrap: 'wrap', children: ['No requests yet. The meter runs from the next one.'] })] })] })
   }
 
   const segments = split(t.usd, width)
@@ -166,7 +216,7 @@ export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, cos
   notes.push('Cache writes are priced at the one-hour rate.')
 
   return Box({ flexDirection: 'column', children: [
-    fare, where, who,
+    fare, ...planned, where, who,
     Box({ marginTop: 1, flexDirection: 'column', children: notes.map(n => Text({ dimColor: true, wrap: 'wrap', children: [n] })) }),
   ] })
 }

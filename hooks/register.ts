@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { freshLedger, noteDone, noteSpawn, recordStep, type Ledger } from './meter'
-import { PANE, anyRunning, cardText, drawPane } from './pane'
+import { PANE, anyRunning, cardText, drawPane, type Plan } from './pane'
 
 const KEY_PANE = 'pane'
 const TITLE = 'Taxi Meter'
@@ -29,14 +29,15 @@ function redraw($: EngineInterface, s: State) {
   if (s.paneOpen) $.ui.invalidate('ui.render')
 }
 
-/** /cost's running total; free to read without arguments. */
-async function costUsd($: EngineInterface): Promise<number | null> {
-  return (await $.session.usage()).cost?.usd ?? null
+/** /cost's running total and the plan's windows; free to read without arguments. */
+async function figures($: EngineInterface): Promise<{ costUsd: number | null; plan: Plan }> {
+  const u = await $.session.usage()
+  return { costUsd: u.cost?.usd ?? null, plan: { limits: u.rateLimits, now: await $.clock.now() } }
 }
 
 /** The meter starts over from /cost's total now, so Other counts only what comes after. */
 async function restart($: EngineInterface, s: State) {
-  s.l = freshLedger((await costUsd($)) ?? 0)
+  s.l = freshLedger((await figures($)).costUsd ?? 0)
   redraw($, s)
 }
 
@@ -108,6 +109,13 @@ export const register: Register = on => {
     return r
   })
 
+  // A plan window moved a whole point, appeared or left, or /cost grew past a request the meter saw.
+  on('session.measure', async ($, e, next) => {
+    const r = await next(e)
+    if (e.changed.includes('rateLimits') || e.changed.includes('cost')) redraw($, s)
+    return r
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     // A sidebar or nothing: inline on the terminal's main screen it would push the transcript around.
@@ -116,7 +124,8 @@ export const register: Register = on => {
       return Box({ children: [] })
     }
     s.paneOpen = true
-    return drawPane({ Box, Text }, e.props.bodyColumns, s.l, await costUsd($), s.frame)
+    const f = await figures($)
+    return drawPane({ Box, Text }, e.props.bodyColumns, s.l, f.costUsd, s.frame, f.plan)
   })
 
   on('ui.close', async ($, e, next) => {
@@ -150,6 +159,7 @@ export const register: Register = on => {
       await openPane($, s)
       return { text: 'taxi-meter pane open, and it reopens at session start; /meter pane off closes it for good.' }
     }
-    return { text: cardText(s.l, await costUsd($)) }
+    const f = await figures($)
+    return { text: cardText(s.l, f.costUsd, f.plan) }
   })
 }
