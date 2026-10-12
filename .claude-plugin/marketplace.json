@@ -1,0 +1,13 @@
+{
+  "name": "santi-taxi-meter",
+  "description": "taxi-meter, a Claude Code mod: a live sidebar meter of session spend per agent and per token type.",
+  "owner": {
+    "name": "Santiago"
+  },
+  "plugins": [
+    {
+      "name": "taxi-meter",
+      "source": "./"
+    }
+  ]
+}
