@@ -1,14 +1,31 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { freshLedger, noteDone, noteSpawn, recordStep, type Ledger } from './meter'
-import { PANE, cardText, drawPane } from './pane'
+import { PANE, anyRunning, cardText, drawPane } from './pane'
 
 const KEY_PANE = 'pane'
 const TITLE = 'Taxi Meter'
+/** How often a running agent's Clawd takes a step. */
+const STEP_MS = 400
 
-type State = { l: Ledger; surface: string | null; paneOpen: boolean }
+type State = { l: Ledger; surface: string | null; paneOpen: boolean; frame: number; walking: Timer | null }
+
+/** Steps the Clawds while the pane is open and some agent runs, and stops the timer the moment neither holds. */
+function walk($: EngineInterface, s: State) {
+  const due = s.paneOpen && anyRunning(s.l)
+  if (due && !s.walking) {
+    s.walking = $.clock.every(STEP_MS, () => {
+      s.frame++
+      $.ui.invalidate('ui.render')
+    })
+  } else if (!due && s.walking) {
+    s.walking.cancel()
+    s.walking = null
+  }
+}
 
 function redraw($: EngineInterface, s: State) {
+  walk($, s)
   if (s.paneOpen) $.ui.invalidate('ui.render')
 }
 
@@ -26,11 +43,11 @@ async function restart($: EngineInterface, s: State) {
 async function openPane($: EngineInterface, s: State) {
   s.paneOpen = true
   await $.ui.open({ id: PANE, title: TITLE })
-  $.ui.invalidate('ui.render')
+  redraw($, s)
 }
 
 export const register: Register = on => {
-  const s: State = { l: freshLedger(0), surface: null, paneOpen: false }
+  const s: State = { l: freshLedger(0), surface: null, paneOpen: false, frame: 0, walking: null }
 
   on('session.start', async ($, e, next) => {
     const r = await next(e)
@@ -97,13 +114,14 @@ export const register: Register = on => {
       return Box({ children: [] })
     }
     s.paneOpen = true
-    return drawPane({ Box, Text }, e.props.bodyColumns, s.l, await costUsd($))
+    return drawPane({ Box, Text }, e.props.bodyColumns, s.l, await costUsd($), s.frame)
   })
 
   on('ui.close', async ($, e, next) => {
     const r = await next(e)
     if (e.id !== PANE) return r
     s.paneOpen = false
+    walk($, s)
     // Closed by its own mark: the person no longer wants it at session start either.
     if (e.origin.kind === 'person') await $.store.delete(KEY_PANE).catch(() => {})
     return r
@@ -119,6 +137,7 @@ export const register: Register = on => {
       if (words[1] === 'off') {
         await $.store.delete(KEY_PANE)
         s.paneOpen = false
+        walk($, s)
         await $.ui.close({ id: PANE })
         return { text: 'taxi-meter pane closed, and no longer opens at session start.' }
       }

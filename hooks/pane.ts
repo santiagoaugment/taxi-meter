@@ -7,8 +7,10 @@ export const PANE = 'taxi-meter'
 /** Agent rows the pane lists before folding the cheapest into one line. */
 const MAX_ROWS = 6
 
-/** Clawd, the Claude Code mascot, three rows tall and padded to one width. */
-const CLAWD = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  ']
+/** Clawd, the Claude Code mascot, three rows tall and padded to one width; a running agent's legs alternate between the two last rows. */
+const CLAWD = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  ', '  ▝▝ ▘▘  ']
+/** Main is Claude orange; each agent takes the next of these theme colours in the order it was spawned. */
+const AGENT_COLORS = ['suggestion', 'success', 'autoAccept', 'warning', 'planMode', 'ide']
 /** Narrower than this, a row drops Clawd for a one-cell glyph. */
 const CLAWD_MIN_WIDTH = 28
 
@@ -43,6 +45,14 @@ const ranked = (l: Ledger) => [...l.rows].sort((a, b) => rowUsd(b) - rowUsd(a))
 
 const rowName = (r: Row) => (r.id === 'main' ? 'main' : r.label)
 
+function rowColor(l: Ledger, r: Row): string {
+  if (r.id === 'main') return 'claude'
+  const i = l.rows.filter(x => x.id !== 'main').indexOf(r)
+  return AGENT_COLORS[i % AGENT_COLORS.length]
+}
+
+export const anyRunning = (l: Ledger) => l.rows.some(r => r.running)
+
 const rowDetail = (r: Row) =>
   [shortModel(r.model), r.id === 'main' ? null : r.kind, `${r.requests} req`, `${fmtTok(r.tokens.input + r.tokens.write + r.tokens.read)} in`, `${fmtTok(r.tokens.output)} out`, r.unpriced ? `${r.unpriced} unpriced` : null]
     .filter(Boolean).join(' · ')
@@ -66,7 +76,8 @@ export function cardText(l: Ledger, costUsd: number | null): string {
 
 type Els = Pick<Elements['terminal'], 'Box' | 'Text'>
 
-export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, costUsd: number | null): RenderNode {
+/** `frame` counts the walk's steps: on odd ones a running agent's Clawd has lifted the other pair of legs. */
+export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, costUsd: number | null, frame = 0): RenderNode {
   const width = Math.max(16, Math.min(48, bodyColumns - 2))
   const t = totals(l)
   const o = official(l, costUsd)
@@ -119,24 +130,25 @@ export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, cos
     heading('WHO SPENT IT', `${l.rows.length - (l.rows.some(r => r.id === 'main') ? 1 : 0)} agents`),
     ...shown.map(r => {
       const name = rowName(r)
+      const color = rowColor(l, r)
       const filled = Math.max(rowUsd(r) > 0 ? 1 : 0, Math.round(rowUsd(r) / top * barWidth))
       const bar = Text({ wrap: 'truncate-end', children: [
-        Text({ color: 'claude', children: ['▬'.repeat(filled)] }),
+        Text({ color, children: ['▬'.repeat(filled)] }),
         Text({ dimColor: true, children: ['─'.repeat(barWidth - filled)] }),
       ] })
       const state = r.id === 'main' ? '' : r.running ? ' · running' : ' · done'
       if (!clawd) {
         const glyph = r.id === 'main' ? '◆ ' : r.running ? '● ' : '✓ '
-        const glyphColor = r.id === 'main' ? 'claude' : r.running ? 'warning' : 'success'
         return Box({ flexDirection: 'column', children: [
-          line([Text({ color: glyphColor, children: [glyph] }), Text({ bold: r.running, children: [name] })], 2 + name.length, fmtUsd(rowUsd(r))),
+          line([Text({ color, children: [glyph] }), Text({ bold: r.running, children: [name] })], 2 + name.length, fmtUsd(rowUsd(r))),
           Text({ wrap: 'truncate-end', children: ['  ', bar, Text({ dimColor: true, children: [' ' + rowDetail(r) + state] })] }),
         ] })
       }
-      // Clawd stands beside the row's three lines; a finished agent's is dimmed.
+      // Clawd stands beside the row's three lines, walking while his agent runs and dimmed once it is done.
       const textWidth = width - CLAWD[0].length - 1
+      const legs = r.running && frame % 2 ? CLAWD[3] : CLAWD[2]
       return Box({ flexDirection: 'row', children: [
-        Box({ flexDirection: 'column', marginRight: 1, children: CLAWD.map(part => Text({ color: 'claude', dimColor: r.id !== 'main' && !r.running, children: [part] })) }),
+        Box({ flexDirection: 'column', marginRight: 1, children: [CLAWD[0], CLAWD[1], legs].map(part => Text({ color, dimColor: r.id !== 'main' && !r.running, children: [part] })) }),
         Box({ flexDirection: 'column', children: [
           line([Text({ bold: r.running, children: [name] })], name.length, fmtUsd(rowUsd(r)), undefined, textWidth),
           bar,

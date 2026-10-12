@@ -271,7 +271,7 @@ describe('pane', () => {
     expect(shown).toMatch(/\/cost \$1\.00/)
   })
 
-  test('each row who spent it is drawn with an orange Clawd', async ($, on) => {
+  test('each row who spent it is drawn with a Clawd', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on)
     await $.session.start(session)
@@ -281,7 +281,40 @@ describe('pane', () => {
     await step($, w, usage(), 'a1')
     const heads = await (await mountPane($)).findAll({ type: 'Text', text: '▐▛███▜▌' })
     expect(heads).toHaveLength(2)
-    for (const h of heads) expect(h.props.color).toBe('claude')
+  })
+
+  test('main stays orange and each agent gets a colour of its own', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    await step($, w, usage())
+    for (const id of ['a1', 'a2']) {
+      await $.agent.spawn(spawnInput())
+      await step($, w, usage(), id)
+    }
+    const colors = (await (await mountPane($)).findAll({ type: 'Text', text: '▐▛███▜▌' })).map(h => h.props.color)
+    expect(colors).toHaveLength(3)
+    expect(colors.filter(c => c === 'claude')).toHaveLength(1)
+    expect(new Set(colors).size).toBe(3)
+  })
+
+  test('a running agent walks, and stands still once it is done', async ($, on) => {
+    const clock = mock.clock(on, { now: START })
+    const w = world(on)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    await $.agent.spawn(spawnInput())
+    await step($, w, usage(), 'a1')
+    const ui = await mountPane($)
+    const legs = async () => (await ui.findAll({ type: 'Text', text: /[▘▝]/ })).map(t => t.text).join('|')
+    const first = await legs()
+    await clock.advance(400)
+    expect(await legs()).not.toBe(first)
+    await $.turn.complete(turnDone('a1'))
+    const still = await legs()
+    await clock.advance(1000)
+    expect(await legs()).toBe(still)
   })
 
   test('past the row limit the cheapest agents fold into one line', async ($, on) => {
