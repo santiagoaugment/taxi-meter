@@ -56,7 +56,8 @@ function world(on: On, opts: { store?: Map<string, unknown> } = {}) {
   on('ui.open', ($, e) => { panes.add(e.id); return { value: { isPlaced: true as const } } })
   on('ui.close', ($, e) => { panes.delete(e.id); return { value: undefined } })
   let agents = 0
-  on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a' + ++agents }))
+  // A teammate's address carries the name the team gave it, suffixed with its spawn count.
+  on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a' + ++agents, ...(e.isTeammate ? { teammateId: `${e.name}-${agents}@crew` } : {}) }))
   const answers: Array<TurnUsage | null> = []
   on('turn.step', async function* ($, e) {
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: answers.shift() ?? null }
@@ -209,6 +210,20 @@ describe('wiring', () => {
     expect((await $.command.run(run(''))).text).toMatch(/running/)
     await $.turn.complete(turnDone('a1'))
     expect((await $.command.run(run(''))).text).toMatch(/done/)
+  })
+
+  test('a named agent shows its name, a teammate the name its team gave it', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    await $.session.start(session)
+    await $.agent.spawn(spawnInput({ name: 'scout' }))
+    await step($, w, usage(), 'a1')
+    await $.agent.spawn(spawnInput({ name: 'scout', isTeammate: true }))
+    await step($, w, usage(), 'a2')
+    const card = (await $.command.run(run(''))).text ?? ''
+    expect(card).toMatch(/ scout · /)
+    expect(card).toMatch(/ scout-2 · /)
+    expect(card).not.toMatch(/find the pane code/)
   })
 })
 

@@ -88,7 +88,9 @@ export const register: Register = on => {
     const r = await next(e)
     try {
       if (r.agentId) {
-        noteSpawn(s.l, r.agentId, { label: e.description, kind: e.subagentType, model: r.model }, await $.clock.now())
+        // A named agent goes by its name; a teammate by the one its team settled on (`scout-2`), the part of its address before the `@`.
+        const name = r.teammateId?.split('@')[0] ?? e.name
+        noteSpawn(s.l, r.agentId, { label: name || e.description, kind: e.subagentType, model: r.model }, await $.clock.now())
         redraw($, s)
       }
     } catch {}
