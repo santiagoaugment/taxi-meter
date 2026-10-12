@@ -271,6 +271,19 @@ describe('pane', () => {
     expect(shown).toMatch(/\/cost \$1\.00/)
   })
 
+  test('each row who spent it is drawn with an orange Clawd', async ($, on) => {
+    mock.clock(on, { now: START })
+    const w = world(on)
+    await $.session.start(session)
+    await $.command.run(run('pane'))
+    await step($, w, usage())
+    await $.agent.spawn(spawnInput())
+    await step($, w, usage(), 'a1')
+    const heads = await (await mountPane($)).findAll({ type: 'Text', text: '▐▛███▜▌' })
+    expect(heads).toHaveLength(2)
+    for (const h of heads) expect(h.props.color).toBe('claude')
+  })
+
   test('past the row limit the cheapest agents fold into one line', async ($, on) => {
     mock.clock(on, { now: START })
     const w = world(on)

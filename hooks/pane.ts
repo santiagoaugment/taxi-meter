@@ -7,6 +7,11 @@ export const PANE = 'taxi-meter'
 /** Agent rows the pane lists before folding the cheapest into one line. */
 const MAX_ROWS = 6
 
+/** Clawd, the Claude Code mascot, three rows tall and padded to one width. */
+const CLAWD = [' ▐▛███▜▌ ', '▝▜█████▛▘', '  ▘▘ ▝▝  ']
+/** Narrower than this, a row drops Clawd for a one-cell glyph. */
+const CLAWD_MIN_WIDTH = 28
+
 const NAMES: Record<keyof Buckets, string> = { output: 'output', write: 'cache write', read: 'cache read', input: 'input' }
 const COLORS: Record<keyof Buckets, string> = { output: 'claude', write: 'warning', read: 'success', input: 'suggestion' }
 
@@ -71,9 +76,9 @@ export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, cos
     ...(aside ? [Text({ dimColor: true, children: [`  ${aside}`] })] : []),
   ] })
   // A label on the left and an amount flush right, cut to the pane's width.
-  const line = (left: RenderNode[], leftLen: number, right: string, rightColor?: string) => Text({ wrap: 'truncate-end', children: [
+  const line = (left: RenderNode[], leftLen: number, right: string, rightColor?: string, w = width) => Text({ wrap: 'truncate-end', children: [
     ...left,
-    ' '.repeat(Math.max(1, width - leftLen - right.length)),
+    ' '.repeat(Math.max(1, w - leftLen - right.length)),
     Text({ color: rightColor, children: [right] }),
   ] })
 
@@ -107,20 +112,35 @@ export function drawPane({ Box, Text }: Els, bodyColumns: number, l: Ledger, cos
   const shown = all.slice(0, MAX_ROWS)
   const folded = all.slice(MAX_ROWS)
   const top = rowUsd(all[0]) || 1
-  const barWidth = Math.max(4, Math.min(12, width - 30))
+  const clawd = width >= CLAWD_MIN_WIDTH
+  // Beside Clawd the bar has a line of its own; without him it shares one with the detail.
+  const barWidth = clawd ? Math.min(24, width - CLAWD[0].length - 1) : Math.max(4, Math.min(12, width - 30))
   const who = Box({ flexDirection: 'column', children: [
     heading('WHO SPENT IT', `${l.rows.length - (l.rows.some(r => r.id === 'main') ? 1 : 0)} agents`),
     ...shown.map(r => {
-      const glyph = r.id === 'main' ? '◆ ' : r.running ? '● ' : '✓ '
-      const glyphColor = r.id === 'main' ? 'claude' : r.running ? 'warning' : 'success'
       const name = rowName(r)
       const filled = Math.max(rowUsd(r) > 0 ? 1 : 0, Math.round(rowUsd(r) / top * barWidth))
-      return Box({ flexDirection: 'column', children: [
-        line([Text({ color: glyphColor, children: [glyph] }), Text({ bold: r.running, children: [name] })], 2 + name.length, fmtUsd(rowUsd(r))),
-        Text({ wrap: 'truncate-end', children: [
-          '  ',
-          Text({ color: 'claude', children: ['▬'.repeat(filled)] }),
-          Text({ dimColor: true, children: ['─'.repeat(barWidth - filled) + ' ' + rowDetail(r) + (r.id !== 'main' && !r.running ? ' · done' : '')] }),
+      const bar = Text({ wrap: 'truncate-end', children: [
+        Text({ color: 'claude', children: ['▬'.repeat(filled)] }),
+        Text({ dimColor: true, children: ['─'.repeat(barWidth - filled)] }),
+      ] })
+      const state = r.id === 'main' ? '' : r.running ? ' · running' : ' · done'
+      if (!clawd) {
+        const glyph = r.id === 'main' ? '◆ ' : r.running ? '● ' : '✓ '
+        const glyphColor = r.id === 'main' ? 'claude' : r.running ? 'warning' : 'success'
+        return Box({ flexDirection: 'column', children: [
+          line([Text({ color: glyphColor, children: [glyph] }), Text({ bold: r.running, children: [name] })], 2 + name.length, fmtUsd(rowUsd(r))),
+          Text({ wrap: 'truncate-end', children: ['  ', bar, Text({ dimColor: true, children: [' ' + rowDetail(r) + state] })] }),
+        ] })
+      }
+      // Clawd stands beside the row's three lines; a finished agent's is dimmed.
+      const textWidth = width - CLAWD[0].length - 1
+      return Box({ flexDirection: 'row', children: [
+        Box({ flexDirection: 'column', marginRight: 1, children: CLAWD.map(part => Text({ color: 'claude', dimColor: r.id !== 'main' && !r.running, children: [part] })) }),
+        Box({ flexDirection: 'column', children: [
+          line([Text({ bold: r.running, children: [name] })], name.length, fmtUsd(rowUsd(r)), undefined, textWidth),
+          bar,
+          Text({ dimColor: true, wrap: 'truncate-end', children: [rowDetail(r) + state] }),
         ] }),
       ] })
     }),
